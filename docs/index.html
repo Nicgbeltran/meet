@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meet with Nico</title>
+  <meta name="description" content="Pick a time, a length and a place to meet with Nico.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%232f6f5e'/%3E%3Ctext x='32' y='43' font-size='34' font-family='Georgia,serif' fill='white' text-anchor='middle'%3EN%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="card" id="app">
+    <aside class="intro">
+      <div class="avatar" aria-hidden="true">N</div>
+      <h1>Meet with Nico</h1>
+      <p class="lede">Pick how long you need, then tell me what it's about.</p>
+
+      <div class="field-label" id="len-label">How long?</div>
+      <div class="chips" id="durations" role="radiogroup" aria-labelledby="len-label"></div>
+
+      <div class="meta">
+        <div>📍 Google Meet, or anywhere you choose</div>
+        <label class="tz">🌐
+          <select id="tz" aria-label="Your time zone"></select>
+        </label>
+      </div>
+    </aside>
+
+    <section class="pane" id="pick">
+      <div class="month-head">
+        <button class="icon" id="prev" aria-label="Previous month">‹</button>
+        <h2 id="month-title"></h2>
+        <button class="icon" id="next" aria-label="Next month">›</button>
+      </div>
+      <div class="weekdays" aria-hidden="true"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+      <div class="grid" id="grid" role="grid"></div>
+      <p class="status" id="pick-status" role="status"></p>
+      <div class="times-wrap">
+        <h3 id="day-title"></h3>
+        <div class="times" id="times"></div>
+      </div>
+    </section>
+
+    <section class="pane hidden" id="details">
+      <button class="link back" id="back">‹ Back</button>
+      <h2>Your details</h2>
+      <p class="when" id="when"></p>
+      <form id="form" novalidate>
+        <label>Your name <span class="req">*</span>
+          <input name="name" autocomplete="name" maxlength="100" required>
+        </label>
+        <label>Meeting name <span class="req">*</span>
+          <input name="title" maxlength="150" placeholder="e.g. Coffee catch-up, Project review" required>
+        </label>
+        <fieldset class="contact">
+          <legend>How can I reach you? <span class="hint">Email, phone, or both. At least one.</span></legend>
+          <label>Email
+            <input name="email" type="email" autocomplete="email" maxlength="200" placeholder="you@example.com">
+          </label>
+          <label>Phone
+            <input name="phone" type="tel" autocomplete="tel" maxlength="40" placeholder="+1 403 555 0100">
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Where?</legend>
+          <label class="radio"><input type="radio" name="locationType" value="meet" checked> Google Meet (I'll send a link)</label>
+          <label class="radio"><input type="radio" name="locationType" value="custom"> Somewhere else</label>
+          <input name="locationText" class="hidden" maxlength="200" placeholder="Type the place or address">
+        </fieldset>
+        <label>Anything I should know? <span class="hint">Optional</span>
+          <textarea name="notes" rows="3" maxlength="2000"></textarea>
+        </label>
+        <label class="trap" aria-hidden="true">Website <input name="website" tabindex="-1" autocomplete="off"></label>
+        <p class="error" id="form-error" role="alert"></p>
+        <button class="primary" id="submit" type="submit">Book it</button>
+        <p class="fine">With an email you get a calendar invite and reminders a day and an hour before.</p>
+      </form>
+    </section>
+
+    <section class="pane hidden" id="done">
+      <div class="tick" aria-hidden="true">✓</div>
+      <h2 id="done-title">You're booked</h2>
+      <dl class="summary" id="summary"></dl>
+      <p id="done-note"></p>
+      <p><a id="manage-link" href="#">Cancel or reschedule</a> · <a id="gcal-link" target="_blank" rel="noopener">Add to Google Calendar</a></p>
+    </section>
+
+    <section class="pane hidden" id="manage">
+      <h2>Your booking</h2>
+      <dl class="summary" id="manage-summary"></dl>
+      <p class="error" id="manage-error" role="alert"></p>
+      <div class="actions" id="manage-actions">
+        <button class="primary" id="resched">Pick a new time</button>
+        <button class="danger" id="cancel">Cancel meeting</button>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
