@@ -1,5 +1,5 @@
 // Booking page front end. Talks to the Apps Script web app at API.
-const API = 'https://script.google.com/macros/s/REPLACE_WITH_DEPLOYMENT_ID/exec';
+const API = 'https://script.google.com/macros/s/AKfycbx7Za4vSfKa8jnASbrGqLuH6IzAcwaqScrbC_MaxeUFmWntWsTvLRveksmCZbIk7SHw/exec';
 const LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
 const MOCK = LOCAL && new URLSearchParams(location.search).has('mock');
 const NOT_READY = !MOCK && API.includes('REPLACE_WITH');
