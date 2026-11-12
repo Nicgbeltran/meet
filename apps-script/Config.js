@@ -19,7 +19,7 @@ var CONFIG = {
     ['07:00', '21:30'], // Wed
     ['07:00', '21:30'], // Thu
     ['07:00', '21:30'], // Fri
-    null,               // Sat
+    ['07:00', '21:30'], // Sat
   ],
   slotStepMinutes: 15,
   bufferMinutes: 10,      // kept free before and after every booking

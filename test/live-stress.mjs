@@ -61,10 +61,10 @@ async function main() {
     const bad = slots.filter((t) => {
       const s = local(t), e = local(t + d * MIN);
       const startMin = +s.hour * 60 + +s.minute, endMin = +e.hour * 60 + +e.minute;
-      return s.weekday === 'Sat' || startMin < 420 || endMin > 1290 || endMin < startMin || t % (15 * MIN) !== 0
+      return startMin < 420 || endMin > 1290 || endMin < startMin || t % (15 * MIN) !== 0
         || t < now + 2 * H - MIN || t > now + 60 * D;
     });
-    check(`slots ${d} min obey hours/Saturday/notice/window`, a.ok && b.ok && slots.length > 0 && bad.length === 0,
+    check(`slots ${d} min obey hours/notice/window`, a.ok && b.ok && slots.length > 0 && bad.length === 0,
       `${slots.length} slots, ${bad.length} bad`);
   }
   check('slot lookups stay fast', worstMs < 15000, `slowest ${worstMs} ms`);
@@ -95,8 +95,7 @@ async function main() {
   await expectErr('spam trap field blocks', base({ start: s0, website: 'http://spam' }), /went wrong/);
   await expectErr('rejects a time in the past', base({ start: Math.floor((now - D) / (15 * MIN)) * 15 * MIN }), /taken/);
   await expectErr('rejects a time inside the 2-hour notice', base({ start: Math.ceil((now + 30 * MIN) / (15 * MIN)) * 15 * MIN }), /taken/);
-  const sat = byDur[30].find((t) => local(t).weekday === 'Fri');
-  await expectErr('rejects a Saturday', base({ start: sat + D }), /taken/);
+  await expectErr('rejects 6:45am, before opening', base({ start: s0 - 3 * H - 15 * MIN }), /taken/);
   await expectErr('rejects 11pm', base({ start: s0 - (s0 % D) + 7 * H }), /taken/); // 07:00Z = 11pm/midnight PT
   await expectErr('rejects 70 days out', base({ start: Math.floor((now + 70 * D) / D) * D + 18 * H }), /taken/);
   await expectErr('rejects off-grid minute', base({ start: s0 + 7 * MIN }), /taken|pick a time/i);
