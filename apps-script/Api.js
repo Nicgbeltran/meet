@@ -17,6 +17,7 @@ function route_(p) {
     case 'booking': return { booking: describeBooking_(findBooking_(p.token)) };
     case 'cancel': return cancel_(p);
     case 'reschedule': return reschedule_(p);
+    case 'health': return health_();
   }
   throw userError('Unknown request.');
 }
@@ -57,7 +58,9 @@ function slotsBetween_(startMs, endMs, duration, token) {
 }
 
 function slotIsOpen_(start, duration, ignore) {
-  var busy = busyAround_(start, start + duration * 60000, true);
+  // Free/busy can lag a few seconds behind a booking just made, so also read the
+  // booking calendar's own events, which update straight away.
+  var busy = busyAround_(start, start + duration * 60000, true).concat(bookedEvents_(start, start + duration * 60000));
   if (ignore) busy = subtractInterval(busy, ignore);
   return slotsFor_([ownerDate_(start)], duration, busy).indexOf(start) !== -1;
 }
@@ -96,21 +99,46 @@ function busyAround_(fromMs, toMs, fresh) {
   var busy = [];
   Object.keys(res.calendars || {}).forEach(function (id) {
     var cal = res.calendars[id];
-    if (cal.errors && cal.errors.length) console.warn('freebusy error for ' + id + ': ' + JSON.stringify(cal.errors));
+    if (cal.errors && cal.errors.length) {
+      console.warn('freebusy error for ' + id + ': ' + JSON.stringify(cal.errors));
+      try { cache.put('fbErrors', JSON.stringify({ id: id, errors: cal.errors, at: Date.now() }), 6 * 3600); } catch (ignored) {}
+    }
     (cal.busy || []).forEach(function (b) { busy.push({ start: Date.parse(b.start), end: Date.parse(b.end) }); });
   });
   try { cache.put(key, JSON.stringify(busy), 60); } catch (ignored) { /* too big to cache */ }
   return busy;
 }
 
+function bookedEvents_(fromMs, toMs) {
+  var pad = (CONFIG.bufferMinutes + 5) * 60000;
+  var res = Calendar.Events.list(CONFIG.bookingCalendarId, {
+    timeMin: new Date(fromMs - pad).toISOString(),
+    timeMax: new Date(toMs + pad).toISOString(),
+    singleEvents: true,
+    maxResults: 250,
+  });
+  return (res.items || [])
+    .filter(function (ev) { return ev.status !== 'cancelled' && ev.transparency !== 'transparent' && ev.start && ev.start.dateTime; })
+    .map(bookingInterval_);
+}
+
 function busyCalendarIds_() {
   var cache = CacheService.getScriptCache();
-  var hit = cache.get('busyIds');
+  var hit = cache.get('busyIds3');
   if (hit) return JSON.parse(hit);
-  var ids = CalendarApp.getAllCalendars()
-    .filter(function (c) { return !CONFIG.ignoreCalendars.test(c.getName().trim()); })
-    .map(function (c) { return c.getId(); });
-  cache.put('busyIds', JSON.stringify(ids), 6 * 3600);
+  // CalendarList, not CalendarApp.getAllCalendars(): the latter leaves out calendars shared
+  // from another account (nic@solaryyc.ca was missing, found 2026-11-11).
+  var ids = [];
+  var pageToken;
+  do {
+    var page = Calendar.CalendarList.list({ maxResults: 250, pageToken: pageToken }); // hidden calendars stay out
+    (page.items || []).forEach(function (c) {
+      var name = String(c.summaryOverride || c.summary || '').trim();
+      if (!CONFIG.ignoreCalendars.test(name)) ids.push(c.id);
+    });
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  cache.put('busyIds3', JSON.stringify(ids), 6 * 3600);
   return ids;
 }
 
@@ -118,17 +146,23 @@ function busyCalendarIds_() {
 
 function book_(p) {
   var b = cleanBooking(p, CONFIG);
+  // A retried request (same requestId) gets the first answer back instead of a second booking.
+  var reqKey = /^[A-Za-z0-9-]{8,64}$/.test(String(p.requestId || '')) ? 'req:' + p.requestId : null;
+  var cache = CacheService.getScriptCache();
+  if (reqKey && cache.get(reqKey)) return JSON.parse(cache.get(reqKey));
   checkDailyLimit_();
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
+  var lock = takeLock_();
   try {
+    if (reqKey && cache.get(reqKey)) return JSON.parse(cache.get(reqKey));
     if (!slotIsOpen_(b.start, b.duration)) throw userError('Sorry, that time was just taken. Please pick another one.');
     var token = Utilities.getUuid();
     var ev = Calendar.Events.insert(eventResource_(b, token), CONFIG.bookingCalendarId,
       { conferenceDataVersion: 1, sendUpdates: b.email ? 'all' : 'none' });
     countBooking_();
-    notifyOwner_('New booking', ev);
-    return { booking: describeBooking_(ev), token: token };
+    var result = { booking: describeBooking_(ev), token: token };
+    if (reqKey) cache.put(reqKey, JSON.stringify(result), 6 * 3600);
+    try { notifyOwner_('New booking', ev); } catch (err) { console.error('notice failed: ' + err); }
+    return result;
   } finally {
     lock.releaseLock();
   }
@@ -138,7 +172,7 @@ function cancel_(p) {
   var ev = findBooking_(p.token);
   if (bookingInterval_(ev).start < Date.now()) throw userError('This meeting has already started, so it can\'t be cancelled here.');
   Calendar.Events.remove(CONFIG.bookingCalendarId, ev.id, { sendUpdates: 'all' });
-  notifyOwner_('Cancelled', ev);
+  try { notifyOwner_('Cancelled', ev); } catch (err) { console.error('notice failed: ' + err); }
   return { cancelled: true };
 }
 
@@ -149,8 +183,7 @@ function reschedule_(p) {
   var duration = (old.end - old.start) / 60000;
   var start = Number(p.start);
   if (!isFinite(start) || start % 60000 !== 0) throw userError('Please pick a time.');
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
+  var lock = takeLock_();
   try {
     if (!slotIsOpen_(start, duration, old)) throw userError('Sorry, that time was just taken. Please pick another one.');
     var priv = privateProps_(ev);
@@ -162,7 +195,7 @@ function reschedule_(p) {
       end: { dateTime: new Date(start + duration * 60000).toISOString(), timeZone: CONFIG.timeZone },
       extendedProperties: { private: priv },
     }, CONFIG.bookingCalendarId, ev.id, { sendUpdates: 'all' });
-    notifyOwner_('Moved', updated);
+    try { notifyOwner_('Moved', updated); } catch (err) { console.error('notice failed: ' + err); }
     return { booking: describeBooking_(updated) };
   } finally {
     lock.releaseLock();
@@ -230,6 +263,24 @@ function privateProps_(ev) {
 }
 
 // ---- helpers ----
+
+function takeLock_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(25000)) throw userError('Lots of people are booking right now. Please try again in a moment.');
+  return lock;
+}
+
+function health_() {
+  var props = PropertiesService.getScriptProperties();
+  var cache = CacheService.getScriptCache();
+  return {
+    reminderTriggers: ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'sendReminders'; }).length,
+    lastReminderRun: JSON.parse(props.getProperty('lastReminderRun') || 'null'),
+    busyCalendars: busyCalendarIds_().length,
+    freebusyError: JSON.parse(cache.get('fbErrors') || 'null'),
+    bookingsToday: Number(props.getProperty('count:' + ownerDate_(Date.now())) || 0),
+  };
+}
 
 function ownerTimeToMs_(date, time) {
   return Utilities.parseDate(date + ' ' + time, CONFIG.timeZone, 'yyyy-MM-dd HH:mm').getTime();

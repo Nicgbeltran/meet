@@ -10,22 +10,26 @@ function sendReminders() {
     singleEvents: true,
     maxResults: 100,
   });
+  var sent = 0;
   (res.items || []).forEach(function (ev) {
-    if (ev.status === 'cancelled') return;
-    var p = privateProps_(ev);
-    var start = bookingInterval_(ev).start;
-    var until = start - now;
-    var lead = start - Number(p.bookedAt || 0);
-    var kind = null;
-    if (!p.r1 && until <= 75 * 60000 && lead > 2 * 3600000) kind = 'r1';
-    else if (!p.r24 && until <= 24 * 3600000 && until > 75 * 60000 && lead > 25 * 3600000) kind = 'r24';
-    if (!kind) return;
-    if (p.email) emailReminder_(ev, p, kind);
-    else if (kind === 'r1' && p.phone) remindOwnerToCall_(ev, p);
-    p[kind] = String(now);
-    if (kind === 'r1' && !p.r24) p.r24 = 'skipped';
-    Calendar.Events.patch({ extendedProperties: { private: p } }, CONFIG.bookingCalendarId, ev.id);
+    try {
+      if (ev.status === 'cancelled') return;
+      var p = privateProps_(ev);
+      var kind = reminderKind(p, bookingInterval_(ev).start, now);
+      if (!kind) return;
+      // Mark first, so a failed email is never sent twice by the next run.
+      var marked = Object.assign({}, p);
+      marked[kind] = String(now);
+      if (kind === 'r1' && !marked.r24) marked.r24 = 'skipped';
+      Calendar.Events.patch({ extendedProperties: { private: marked } }, CONFIG.bookingCalendarId, ev.id);
+      if (p.email) emailReminder_(ev, p, kind);
+      else if (kind === 'r1' && p.phone) remindOwnerToCall_(ev, p);
+      sent++;
+    } catch (err) {
+      console.error('reminder failed for ' + ev.id + ': ' + (err && err.stack ? err.stack : err));
+    }
   });
+  PropertiesService.getScriptProperties().setProperty('lastReminderRun', JSON.stringify({ at: now, sent: sent }));
 }
 
 function emailReminder_(ev, p, kind) {

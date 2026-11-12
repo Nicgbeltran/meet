@@ -27,10 +27,29 @@ async function api(params, body) {
   if (MOCK) return mockApi(params, body);
   if (NOT_READY) throw new Error('This booking page is still being set up. Please check back soon.');
   const url = body ? API : API + '?' + new URLSearchParams(params);
-  const res = await fetch(url, body ? { method: 'POST', body: JSON.stringify(body) } : {});
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.error || 'Something went wrong.');
-  return data;
+  // Network blips and Google hiccups are retried. Bookings carry a requestId, so a retry
+  // returns the first booking instead of making a second one.
+  const tries = 3;
+  for (let i = 0; i < tries; i++) {
+    let data = null;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      const res = await fetch(url, { ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}), signal: ctrl.signal });
+      clearTimeout(timer);
+      data = JSON.parse(await res.text());
+    } catch (e) {
+      data = null; // offline, timed out, or Google answered with a page instead of data
+    }
+    if (data && data.ok) return data;
+    if (data && data.error) throw new Error(data.error); // a real answer, e.g. "that time was just taken"
+    if (i < tries - 1) await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+  }
+  throw new Error('The booking page can\'t reach the calendar right now. Please check your connection and try again in a minute.');
+}
+
+function newRequestId() {
+  return (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 // ---------- dates in the viewer's time zone ----------
@@ -166,7 +185,9 @@ function wireForm() {
     $('submit').disabled = true;
     $('submit').textContent = 'Booking…';
     try {
-      const data = await api(null, { action: 'book', ...v, duration: state.duration, start: state.slot, timeZone: state.tz });
+      const key = `${state.slot}|${state.duration}|${v.name}|${v.title}|${v.email}|${v.phone}|${v.locationType}|${v.locationText}`;
+      if (state.requestKey !== key) { state.requestKey = key; state.requestId = newRequestId(); }
+      const data = await api(null, { action: 'book', ...v, duration: state.duration, start: state.slot, timeZone: state.tz, requestId: state.requestId });
       showDone(data.booking, data.token, v);
     } catch (err) {
       $('form-error').textContent = err.message;

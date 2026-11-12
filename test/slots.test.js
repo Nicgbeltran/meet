@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { datesBetween, weekdayOf, buildSlots, subtractInterval, cleanBooking } = require('../apps-script/Slots.js');
+const { datesBetween, weekdayOf, buildSlots, subtractInterval, cleanBooking, reminderKind } = require('../apps-script/Slots.js');
 
 const TZ = 'America/Los_Angeles';
 
@@ -87,4 +87,21 @@ test('cleanBooking: email, phone, or both', () => {
   assert.strictEqual(cleanBooking({ ...ok, email: 'a@b.co', locationType: 'custom', locationText: 'Blue Bottle' }, cfg)
     .location.text, 'Blue Bottle');
   assert.throws(() => cleanBooking({ ...ok, email: 'a@b.co', website: 'spam' }, cfg));
+});
+
+test('reminderKind: a day before, an hour before, never twice, never too soon', () => {
+  const H = 3600000;
+  const start = 100 * H;
+  const bookedEarly = { bookedAt: String(start - 72 * H) };
+  assert.strictEqual(reminderKind(bookedEarly, start, start - 30 * H), null);           // too early
+  assert.strictEqual(reminderKind(bookedEarly, start, start - 23.9 * H), 'r24');
+  assert.strictEqual(reminderKind({ ...bookedEarly, r24: '1' }, start, start - 23 * H), null);
+  assert.strictEqual(reminderKind({ ...bookedEarly, r24: '1' }, start, start - 70 * 60000), 'r1');
+  assert.strictEqual(reminderKind({ ...bookedEarly, r24: '1', r1: '1' }, start, start - 30 * 60000), null);
+  assert.strictEqual(reminderKind(bookedEarly, start, start + 60000), null);            // already started
+  const bookedSameDay = { bookedAt: String(start - 5 * H) };
+  assert.strictEqual(reminderKind(bookedSameDay, start, start - 4 * H), null);          // no day-before
+  assert.strictEqual(reminderKind(bookedSameDay, start, start - 70 * 60000), 'r1');
+  const bookedLastMinute = { bookedAt: String(start - 2 * H + 60000) };
+  assert.strictEqual(reminderKind(bookedLastMinute, start, start - 70 * 60000), null);  // just booked, skip
 });

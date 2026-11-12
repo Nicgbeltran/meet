@@ -54,6 +54,17 @@ function subtractInterval(busy, cut) {
   return out;
 }
 
+// Which reminder is due for a booking right now: 'r1' (an hour before), 'r24' (a day before) or null.
+// Skips a reminder that would arrive too soon after the booking was made.
+function reminderKind(p, start, now) {
+  var until = start - now;
+  var lead = start - Number(p.bookedAt || 0);
+  if (until <= 0) return null;
+  if (!p.r1 && until <= 75 * 60000 && lead > 2 * 3600000) return 'r1';
+  if (!p.r24 && until <= 24 * 3600000 && until > 75 * 60000 && lead > 25 * 3600000) return 'r24';
+  return null;
+}
+
 function cleanBooking(b, cfg) {
   var s = function (v) { return typeof v === 'string' ? v.trim() : ''; };
   if (s(b.website)) throw userError('Something went wrong. Please try again.'); // hidden spam trap
@@ -91,5 +102,5 @@ function cleanBooking(b, cfg) {
 
 if (typeof module !== 'undefined') {
   module.exports = { datesBetween: datesBetween, weekdayOf: weekdayOf, buildSlots: buildSlots,
-    subtractInterval: subtractInterval, cleanBooking: cleanBooking };
+    subtractInterval: subtractInterval, cleanBooking: cleanBooking, reminderKind: reminderKind };
 }
