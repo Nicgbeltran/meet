@@ -179,3 +179,14 @@ a { color: var(--accent); }
 .custom-box .hint, .known-note { margin: 0; font-size: 13px; }
 .known { grid-column: 1 / -1; }
 .known-note { grid-column: 1 / -1; color: var(--muted); }
+
+.addr { position: relative; }
+.suggest {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 5; list-style: none; margin: 0; padding: 4px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); max-height: 280px; overflow-y: auto;
+}
+.suggest li { padding: 8px 10px; border-radius: 8px; cursor: pointer; font-weight: 400; }
+.suggest li small { display: block; color: var(--muted); font-size: 12px; }
+.suggest li[aria-selected="true"], .suggest li:hover { background: var(--accent-soft); }
+.suggest .by-google { cursor: default; color: var(--muted); font-size: 11px; text-align: right; padding: 4px 8px 2px; }
+.suggest .by-google:hover { background: transparent; }

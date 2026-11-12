@@ -347,9 +347,10 @@ function wireForm() {
   const f = $('form');
   f.querySelectorAll('input[name=locationType]').forEach((r) => r.addEventListener('change', () => {
     const custom = f.elements.locationType.value === 'custom';
-    f.elements.locationText.classList.toggle('hidden', !custom);
-    if (custom) f.elements.locationText.focus();
+    $('addr').classList.toggle('hidden', !custom);
+    if (custom) { f.elements.locationText.focus(); loadPlaces(); }
   }));
+  wireAddressFinder(f.elements.locationText);
   $('back').addEventListener('click', () => show('pick'));
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -409,6 +410,104 @@ function showDone(b, token, v) {
     + `&text=${encodeURIComponent(b.title)}&dates=${dt(b.start)}/${dt(b.end)}`
     + `&location=${encodeURIComponent(b.meetUrl || b.where || '')}`;
   show('done');
+}
+
+// ---------- address finder (Google Places) ----------
+// Loaded only when someone picks "Somewhere else", and only if a key is set in maps-key.js.
+// Suggestions are just text: picking one fills the field, and anything typed by hand still works.
+
+const places = { lib: null, loading: null, token: null, items: [], active: -1, seq: 0 };
+
+function loadPlaces() {
+  if (!window.MAPS_KEY) return Promise.resolve(null);
+  if (places.loading) return places.loading;
+  places.loading = new Promise((resolve) => {
+    window.gm_authFailure = () => { places.lib = null; hideSuggestions(); }; // bad or unauthorised key
+    window.__placesReady = async () => {
+      try { places.lib = await google.maps.importLibrary('places'); } catch (e) { places.lib = null; }
+      resolve(places.lib);
+    };
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(window.MAPS_KEY)}&v=weekly&loading=async&callback=__placesReady`;
+    s.async = true;
+    s.onerror = () => resolve(null);
+    document.head.appendChild(s);
+  });
+  return places.loading;
+}
+
+function wireAddressFinder(input) {
+  let timer = null;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 3) { hideSuggestions(); return; }
+    timer = setTimeout(() => suggest(q), 250);
+  });
+  input.addEventListener('keydown', (e) => {
+    if ($('addr-list').classList.contains('hidden')) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = places.items.length;
+      places.active = (places.active + (e.key === 'ArrowDown' ? 1 : -1) + n) % n;
+      paintSuggestions();
+    } else if (e.key === 'Enter' && places.active >= 0) {
+      e.preventDefault();
+      choose(places.active);
+    } else if (e.key === 'Escape') {
+      hideSuggestions();
+    }
+  });
+  input.addEventListener('blur', () => setTimeout(hideSuggestions, 150));
+}
+
+async function suggest(q) {
+  const lib = await loadPlaces();
+  if (!lib) return;
+  const seq = ++places.seq;
+  try {
+    if (!places.token) places.token = new lib.AutocompleteSessionToken();
+    const { suggestions } = await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions({ input: q, sessionToken: places.token });
+    if (seq !== places.seq) return;
+    places.items = (suggestions || []).map((x) => x.placePrediction).filter(Boolean).slice(0, 6).map((p) => ({
+      text: p.text.toString(),
+      main: p.mainText ? p.mainText.toString() : p.text.toString(),
+      rest: p.secondaryText ? p.secondaryText.toString() : '',
+    }));
+    places.active = -1;
+    paintSuggestions();
+  } catch (e) {
+    hideSuggestions(); // quota, network or key trouble: the plain text box still works
+  }
+}
+
+function paintSuggestions() {
+  const list = $('addr-list');
+  if (!places.items.length) { hideSuggestions(); return; }
+  list.innerHTML = places.items.map((it, i) =>
+    `<li role="option" id="addr-${i}" aria-selected="${i === places.active}" data-i="${i}">${esc(it.main)}${it.rest ? `<small>${esc(it.rest)}</small>` : ''}</li>`
+  ).join('') + '<li class="by-google" aria-hidden="true">powered by Google</li>';
+  list.querySelectorAll('li[data-i]').forEach((li) => li.addEventListener('mousedown', (e) => { e.preventDefault(); choose(Number(li.dataset.i)); }));
+  list.classList.remove('hidden');
+  const input = $('form').elements.locationText;
+  input.setAttribute('aria-expanded', 'true');
+  if (places.active >= 0) input.setAttribute('aria-activedescendant', `addr-${places.active}`);
+}
+
+function choose(i) {
+  const it = places.items[i];
+  if (!it) return;
+  $('form').elements.locationText.value = it.text;
+  places.token = null; // a pick ends the billing session
+  hideSuggestions();
+}
+
+function hideSuggestions() {
+  $('addr-list').classList.add('hidden');
+  const input = $('form') && $('form').elements.locationText;
+  if (input) { input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); }
+  places.items = [];
+  places.active = -1;
 }
 
 // ---------- manage (cancel / reschedule) ----------

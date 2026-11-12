@@ -89,7 +89,11 @@
           <legend>Where?</legend>
           <label class="radio"><input type="radio" name="locationType" value="meet" checked> Google Meet (I'll send a link)</label>
           <label class="radio"><input type="radio" name="locationType" value="custom"> Somewhere else</label>
-          <input name="locationText" class="hidden" maxlength="200" placeholder="Type the place or address">
+          <div class="addr hidden" id="addr">
+            <input name="locationText" maxlength="200" placeholder="Type the place or address" autocomplete="off"
+              role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="addr-list">
+            <ul class="suggest hidden" id="addr-list" role="listbox"></ul>
+          </div>
         </fieldset>
         <label>Anything I should know? <span class="hint">Optional</span>
           <textarea name="notes" rows="3" maxlength="2000"></textarea>
@@ -119,6 +123,7 @@
       </div>
     </section>
   </main>
+  <script src="maps-key.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
