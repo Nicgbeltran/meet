@@ -18,6 +18,7 @@ function route_(p) {
     case 'cancel': return cancel_(p);
     case 'reschedule': return reschedule_(p);
     case 'health': return health_();
+    case 'check': return { open: checkWindow_(Number(p.start), Number(p.duration), p.token) };
   }
   throw userError('Unknown request.');
 }
@@ -38,6 +39,7 @@ function publicConfig_() {
     ownerName: CONFIG.ownerName,
     durations: CONFIG.durations,
     defaultDuration: CONFIG.defaultDuration,
+    custom: CONFIG.custom,
     maxDaysAhead: CONFIG.maxDaysAhead,
   };
 }
@@ -45,7 +47,7 @@ function publicConfig_() {
 // ---- availability ----
 
 function slotsBetween_(startMs, endMs, duration, token) {
-  if (CONFIG.durations.indexOf(duration) === -1) throw userError('Please pick one of the meeting lengths.');
+  if (!durationAllowed(duration, CONFIG)) throw userError('Please pick a length between 10 minutes and 10 hours.');
   var now = Date.now();
   var latest = now + CONFIG.maxDaysAhead * 86400000;
   startMs = Math.max(startMs || now, now);
@@ -62,7 +64,19 @@ function slotIsOpen_(start, duration, ignore) {
   // booking calendar's own events, which update straight away.
   var busy = busyAround_(start, start + duration * 60000, true).concat(bookedEvents_(start, start + duration * 60000));
   if (ignore) busy = subtractInterval(busy, ignore);
-  return slotsFor_([ownerDate_(start)], duration, busy).indexOf(start) !== -1;
+  var now = Date.now();
+  return windowIsOpen({
+    date: ownerDate_(start), start: start, durationMin: duration, toUtcMs: ownerTimeToMs_, hours: CONFIG.hours,
+    bufferMin: CONFIG.bufferMinutes, earliestMs: now + CONFIG.minNoticeMinutes * 60000,
+    latestMs: now + CONFIG.maxDaysAhead * 86400000, busy: busy,
+  });
+}
+
+// A typed-in start and end: is that exact window free?
+function checkWindow_(start, duration, token) {
+  if (!durationAllowed(duration, CONFIG)) throw userError('Please pick a length between 10 minutes and 10 hours.');
+  if (!isFinite(start) || start % 300000 !== 0) throw userError('Please pick a time.');
+  return slotIsOpen_(start, duration, token ? bookingInterval_(findBooking_(token)) : null);
 }
 
 function slotsFor_(dates, duration, busy) {
@@ -172,6 +186,8 @@ function cancel_(p) {
   var ev = findBooking_(p.token);
   if (bookingInterval_(ev).start < Date.now()) throw userError('This meeting has already started, so it can\'t be cancelled here.');
   Calendar.Events.remove(CONFIG.bookingCalendarId, ev.id, { sendUpdates: 'all' });
+  var bookedAt = Number(privateProps_(ev).bookedAt || 0);
+  if (bookedAt && ownerDate_(bookedAt) === ownerDate_(Date.now())) countBooking_(-1);
   try { notifyOwner_('Cancelled', ev); } catch (err) { console.error('notice failed: ' + err); }
   return { cancelled: true };
 }
@@ -182,7 +198,7 @@ function reschedule_(p) {
   if (old.start < Date.now()) throw userError('This meeting has already started, so it can\'t be moved here.');
   var duration = (old.end - old.start) / 60000;
   var start = Number(p.start);
-  if (!isFinite(start) || start % 60000 !== 0) throw userError('Please pick a time.');
+  if (!isFinite(start) || start % 300000 !== 0) throw userError('Please pick a time.');
   var lock = takeLock_();
   try {
     if (!slotIsOpen_(start, duration, old)) throw userError('Sorry, that time was just taken. Please pick another one.');
@@ -207,6 +223,7 @@ function eventResource_(b, token) {
   var lines = ['Booked through ' + CONFIG.ownerName + '\'s booking page.', '', 'Who: ' + b.name];
   if (b.email) lines.push('Email: ' + b.email);
   if (b.phone) lines.push('Phone: ' + b.phone);
+  if (b.knownContact) lines.push('Contact: none given. They said you already have their details.');
   lines.push('Where: ' + (b.location.type === 'meet' ? 'Google Meet (link in this invite)' : b.location.text));
   if (b.notes) lines.push('', 'Notes:', b.notes);
   lines.push('', 'Need to cancel or reschedule? ' + manageUrl_(token));
@@ -278,7 +295,7 @@ function health_() {
     lastReminderRun: JSON.parse(props.getProperty('lastReminderRun') || 'null'),
     busyCalendars: busyCalendarIds_().length,
     freebusyError: JSON.parse(cache.get('fbErrors') || 'null'),
-    bookingsToday: Number(props.getProperty('count:' + ownerDate_(Date.now())) || 0),
+    bookingsToday: Number(props.getProperty(countKey_(Date.now())) || 0),
   };
 }
 
@@ -305,14 +322,19 @@ function whenText_(ms, tz) {
 
 function checkDailyLimit_() {
   var props = PropertiesService.getScriptProperties();
-  var n = Number(props.getProperty('count:' + ownerDate_(Date.now())) || 0);
+  var n = Number(props.getProperty(countKey_(Date.now())) || 0);
   if (n >= CONFIG.maxBookingsPerDay) throw userError('The booking page is taking a break for today. Please try again tomorrow.');
 }
 
-function countBooking_() {
+// The daily spam brake counts live bookings made today: a cancelled one gives its place back.
+function countKey_(ms) {
+  return 'live:' + ownerDate_(ms);
+}
+
+function countBooking_(delta) {
   var props = PropertiesService.getScriptProperties();
-  var key = 'count:' + ownerDate_(Date.now());
-  props.setProperty(key, String(Number(props.getProperty(key) || 0) + 1));
+  var key = countKey_(Date.now());
+  props.setProperty(key, String(Math.max(0, Number(props.getProperty(key) || 0) + (delta || 1))));
 }
 
 function notifyOwner_(what, ev) {
@@ -324,6 +346,7 @@ function notifyOwner_(what, ev) {
     'Who: ' + (p.name || ''),
     'Email: ' + (p.email || '-'),
     'Phone: ' + (p.phone || '-'),
+    (!p.email && !p.phone ? 'No email or phone given: they said you already have their contact info.' : ''),
     'Where: ' + (ev.hangoutLink || ev.location || ''),
     '',
     'Calendar: ' + (ev.htmlLink || ''),

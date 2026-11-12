@@ -11,6 +11,8 @@ var CONFIG = {
 
   durations: [15, 30, 45, 60, 90, 120, 150, 180, 240],
   defaultDuration: 30,
+  // Bookers can also type their own start and end: any length in this range.
+  custom: { minMinutes: 10, maxMinutes: 600, stepMinutes: 5 },
   // Sunday first, like Date.getDay(); null means closed.
   hours: [
     ['07:00', '21:30'], // Sun

@@ -43,6 +43,25 @@ function buildSlots(p) {
   return out;
 }
 
+// A preset length, or a custom one within cfg.custom (e.g. 10 min to 10 h in 5-minute steps).
+function durationAllowed(d, cfg) {
+  if (cfg.durations.indexOf(d) !== -1) return true;
+  var c = cfg.custom;
+  return !!c && d >= c.minMinutes && d <= c.maxMinutes && d % c.stepMinutes === 0;
+}
+
+// Whether one exact window (any start on the 5-minute grid) is bookable.
+// p: { date, start, durationMin, toUtcMs, hours, bufferMin, earliestMs, latestMs, busy }
+function windowIsOpen(p) {
+  var h = p.hours[weekdayOf(p.date)];
+  if (!h) return false;
+  var end = p.start + p.durationMin * 60000;
+  if (p.start < p.toUtcMs(p.date, h[0]) || end > p.toUtcMs(p.date, h[1])) return false;
+  if (p.start < p.earliestMs || p.start > p.latestMs) return false;
+  var buf = p.bufferMin * 60000;
+  return !p.busy.some(function (b) { return b.start < end + buf && b.end > p.start - buf; });
+}
+
 // Removes one interval (a booking being moved) from a list of busy intervals.
 function subtractInterval(busy, cut) {
   var out = [];
@@ -76,14 +95,16 @@ function cleanBooking(b, cfg) {
   var tz = s(b.timeZone);
   if (!name || name.length > 100) throw userError('Please enter your name.');
   if (!title || title.length > 150) throw userError('Please give the meeting a name.');
-  if (!email && !phone) throw userError('Please give an email or a phone number (or both).');
+  // People Nico already knows can tick "Nico already has my contact info" and leave both blank.
+  var knownContact = b.knownContact === true || b.knownContact === 'yes' || b.knownContact === 'on';
+  if (!email && !phone && !knownContact) throw userError('Please give an email or a phone number, or tick the box if Nico already has your contact info.');
   if (email && (email.length > 200 || !EMAIL_RE.test(email))) throw userError('That email address doesn\'t look right.');
   var digits = phone.replace(/\D/g, '');
   if (phone && (digits.length < 7 || digits.length > 15 || phone.length > 40)) throw userError('That phone number doesn\'t look right.');
   var duration = Number(b.duration);
-  if (cfg.durations.indexOf(duration) === -1) throw userError('Please pick one of the meeting lengths.');
+  if (!durationAllowed(duration, cfg)) throw userError('Please pick a length between 10 minutes and 10 hours.');
   var start = Number(b.start);
-  if (!isFinite(start) || start % 60000 !== 0) throw userError('Please pick a time.');
+  if (!isFinite(start) || start % 300000 !== 0) throw userError('Please pick a time.');
   var location;
   if (b.locationType === 'meet') {
     location = { type: 'meet' };
@@ -97,10 +118,11 @@ function cleanBooking(b, cfg) {
   if (notes.length > 2000) throw userError('Please keep the notes under 2,000 characters.');
   if (tz.length > 60 || !/^[A-Za-z_+\-\/0-9]*$/.test(tz)) tz = '';
   return { name: name, title: title, email: email, phone: phone, notes: notes, duration: duration,
-    start: start, location: location, timeZone: tz };
+    start: start, location: location, timeZone: tz, knownContact: !email && !phone };
 }
 
 if (typeof module !== 'undefined') {
   module.exports = { datesBetween: datesBetween, weekdayOf: weekdayOf, buildSlots: buildSlots,
-    subtractInterval: subtractInterval, cleanBooking: cleanBooking, reminderKind: reminderKind };
+    subtractInterval: subtractInterval, cleanBooking: cleanBooking, reminderKind: reminderKind,
+    durationAllowed: durationAllowed, windowIsOpen: windowIsOpen };
 }

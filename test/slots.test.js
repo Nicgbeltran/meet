@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { datesBetween, weekdayOf, buildSlots, subtractInterval, cleanBooking, reminderKind } = require('../apps-script/Slots.js');
+const { datesBetween, weekdayOf, buildSlots, subtractInterval, cleanBooking, reminderKind, durationAllowed, windowIsOpen } = require('../apps-script/Slots.js');
 
 const TZ = 'America/Los_Angeles';
 
@@ -82,7 +82,7 @@ test('cleanBooking: email, phone, or both', () => {
   assert.throws(() => cleanBooking(ok, cfg), /email or a phone/);
   assert.throws(() => cleanBooking({ ...ok, email: 'nope' }, cfg), /email address/);
   assert.throws(() => cleanBooking({ ...ok, phone: '12' }, cfg), /phone number/);
-  assert.throws(() => cleanBooking({ ...ok, email: 'a@b.co', duration: 20 }, cfg), /lengths/);
+  assert.throws(() => cleanBooking({ ...ok, email: 'a@b.co', duration: 20 }, cfg), /length/);
   assert.throws(() => cleanBooking({ ...ok, email: 'a@b.co', locationType: 'custom' }, cfg), /where/);
   assert.strictEqual(cleanBooking({ ...ok, email: 'a@b.co', locationType: 'custom', locationText: 'Blue Bottle' }, cfg)
     .location.text, 'Blue Bottle');
@@ -104,4 +104,37 @@ test('reminderKind: a day before, an hour before, never twice, never too soon', 
   assert.strictEqual(reminderKind(bookedSameDay, start, start - 70 * 60000), 'r1');
   const bookedLastMinute = { bookedAt: String(start - 2 * H + 60000) };
   assert.strictEqual(reminderKind(bookedLastMinute, start, start - 70 * 60000), null);  // just booked, skip
+});
+
+test('durationAllowed: presets plus custom 10 min to 10 h in 5-minute steps', () => {
+  const cfg = { durations: [15, 30, 240], custom: { minMinutes: 10, maxMinutes: 600, stepMinutes: 5 } };
+  [15, 240, 10, 95, 600].forEach((d) => assert.ok(durationAllowed(d, cfg), String(d)));
+  [5, 605, 97, 0, -15].forEach((d) => assert.ok(!durationAllowed(d, cfg), String(d)));
+  assert.ok(!durationAllowed(95, { durations: [15] })); // no custom configured
+});
+
+test('windowIsOpen: exact typed-in windows', () => {
+  const p = (start, durationMin, busy = []) => windowIsOpen({ date: '2026-11-12', start, durationMin, toUtcMs, hours,
+    bufferMin: 10, earliestMs: 0, latestMs: Infinity, busy });
+  assert.ok(p(at('2026-11-12', '10:05'), 95));                       // odd start and length
+  assert.ok(p(at('2026-11-12', '07:00'), 600));                      // 10 h from opening
+  assert.ok(!p(at('2026-11-12', '12:00'), 600));                     // runs past 21:30
+  assert.ok(!p(at('2026-11-12', '06:55'), 30));                      // before opening
+  const busy = [{ start: at('2026-11-12', '13:00'), end: at('2026-11-12', '14:00') }];
+  assert.ok(!p(at('2026-11-12', '12:00'), 55, busy));                // ends 12:55, inside the 10-min gap
+  assert.ok(p(at('2026-11-12', '12:00'), 50, busy));                 // ends 12:50, gap kept
+  assert.ok(!p(at('2026-11-12', '14:05'), 30, busy));                // starts 5 min after
+  assert.ok(p(at('2026-11-12', '14:10'), 30, busy));
+});
+
+test('cleanBooking: no contact only with "Nico already has my contact info"', () => {
+  const cfg = { durations: [30], custom: { minMinutes: 10, maxMinutes: 600, stepMinutes: 5 } };
+  const ok = { name: 'Sam', title: 'Coffee', duration: 30, start: 1800000000000, locationType: 'meet' };
+  assert.throws(() => cleanBooking(ok, cfg), /tick the box/);
+  assert.strictEqual(cleanBooking({ ...ok, knownContact: true }, cfg).knownContact, true);
+  assert.strictEqual(cleanBooking({ ...ok, knownContact: 'on' }, cfg).knownContact, true);
+  assert.strictEqual(cleanBooking({ ...ok, knownContact: true, email: 'a@b.co' }, cfg).knownContact, false);
+  assert.strictEqual(cleanBooking({ ...ok, email: 'a@b.co', duration: 95 }, cfg).duration, 95);
+  assert.throws(() => cleanBooking({ ...ok, email: 'a@b.co', duration: 605 }, cfg), /10 hours/);
+  assert.throws(() => cleanBooking({ ...ok, email: 'a@b.co', start: 1800000000000 + 60000 }, cfg), /pick a time/i);
 });

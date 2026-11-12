@@ -23,7 +23,7 @@ function sendReminders() {
       if (kind === 'r1' && !marked.r24) marked.r24 = 'skipped';
       Calendar.Events.patch({ extendedProperties: { private: marked } }, CONFIG.bookingCalendarId, ev.id);
       if (p.email) emailReminder_(ev, p, kind);
-      else if (kind === 'r1' && p.phone) remindOwnerToCall_(ev, p);
+      else if (kind === 'r1') remindOwnerToCall_(ev, p);
       sent++;
     } catch (err) {
       console.error('reminder failed for ' + ev.id + ': ' + (err && err.stack ? err.stack : err));
@@ -58,9 +58,10 @@ function emailReminder_(ev, p, kind) {
 function remindOwnerToCall_(ev, p) {
   MailApp.sendEmail({
     to: Session.getEffectiveUser().getEmail(),
-    subject: 'In an hour: ' + ev.summary + ' (phone only: ' + p.phone + ')',
-    body: p.name + ' booked with a phone number only, so they get no reminder email.\n' +
-      'Phone: ' + p.phone + '\nWhen: ' + whenText_(bookingInterval_(ev).start),
+    subject: 'In an hour: ' + ev.summary + (p.phone ? ' (phone only: ' + p.phone + ')' : ' (no contact given)'),
+    body: p.name + (p.phone ? ' booked with a phone number only' : ' booked without an email or phone (they said you have their details)') +
+      ', so they get no reminder email.\n' + (p.phone ? 'Phone: ' + p.phone + '\n' : '') +
+      'When: ' + whenText_(bookingInterval_(ev).start),
     name: 'Booking page',
   });
 }

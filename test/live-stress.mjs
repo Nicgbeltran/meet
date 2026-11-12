@@ -77,19 +77,20 @@ async function main() {
   const tenAm = (dur) => byDur[dur].filter((t) => t > now + 30 * D && local(t).hour === '10' && local(t).minute === '00');
   const days = [...new Set(tenAm(240).map(dayKey))];
   const at = (i, dur = 30) => tenAm(dur).find((t) => dayKey(t) === days[i]);
-  check('enough free test days', days.length >= 7, `${days.length} days`);
+  check('enough free test days', days.length >= 8, `${days.length} days`);
   const pick = (i) => at(i);
   const s0 = at(6);
   const expectErr = async (name, body, re) => {
     const r = await post(body);
     check(name, !r.ok && re.test(r.error || ''), r.error || 'NO ERROR');
   };
-  await expectErr('rejects no email and no phone', base({ start: s0, phone: '' }), /email or a phone/);
+  await expectErr('rejects no email and no phone unless "Nico has my info" is ticked', base({ start: s0, phone: '' }), /tick the box/);
   await expectErr('rejects bad email', base({ start: s0, email: 'not-an-email' }), /email address/);
   await expectErr('rejects bad phone', base({ start: s0, phone: '12' }), /phone number/);
   await expectErr('rejects missing name', base({ start: s0, name: ' ' }), /name/);
   await expectErr('rejects missing meeting name', base({ start: s0, title: '' }), /meeting a name/);
-  await expectErr('rejects a length not offered', base({ start: s0, duration: 20 }), /lengths/);
+  await expectErr('rejects a length over 10 hours', base({ start: s0, duration: 605 }), /10 hours/);
+  await expectErr('rejects a length off the 5-minute steps', base({ start: s0, duration: 97 }), /10 hours/);
   await expectErr('rejects custom place with no text', base({ start: s0, locationType: 'custom' }), /where/);
   await expectErr('rejects 151-char meeting name', base({ start: s0, title: 'x'.repeat(151) }), /meeting a name/);
   await expectErr('spam trap field blocks', base({ start: s0, website: 'http://spam' }), /went wrong/);
@@ -123,6 +124,22 @@ async function main() {
     const G = await post(base({ start: pick(3), duration: 30, email: GUEST, phone: '', title: '[TEST] invite to a real outside address' }));
     check(`books with an outside guest (${GUEST})`, G.ok, G.error || 'invite sent');
   }
+
+  // ---- custom lengths and typed-in windows ----
+  const cDay = at(6, 240);
+  const odd = cDay + 5 * MIN;                                      // 10:05
+  const chk = await get({ action: 'check', start: odd, duration: 95 });
+  check('a typed-in 10:05 for 1 h 35 min checks as free', chk.ok && chk.open === true, JSON.stringify(chk));
+  const chkLong = await get({ action: 'check', start: cDay, duration: 690 });
+  check('a typed-in window over 10 hours is refused', !chkLong.ok, chkLong.error);
+  const chkLate = await get({ action: 'check', start: cDay + 6 * H, duration: 600 });
+  check('a 10-hour window running past 9:30pm checks as not free', chkLate.ok && chkLate.open === false, JSON.stringify(chkLate));
+  const K = await post(base({ start: odd, duration: 95, phone: '', knownContact: true, title: '[TEST] custom 1h35 at 10:05, no contact' }));
+  check('books a custom 1 h 35 min at 10:05 with no contact ("Nico has my info")', K.ok && K.booking.duration === 95 && K.booking.start === odd, K.error);
+  const chkAfter = await get({ action: 'check', start: odd + 60 * MIN, duration: 30 });
+  check('that custom booking now blocks its window', chkAfter.ok && chkAfter.open === false);
+  const ten = await post(base({ start: at(7, 240) - 165 * MIN, duration: 600, phone: '', knownContact: true, title: '[TEST] 10 hours from 7:15am' }));
+  check('books a full 10 hours (7:15am to 5:15pm)', ten.ok && ten.booking.duration === 600, ten.error || '10 h booked');
 
   // ---- double booking ----
   const raceSlot = pick(4);

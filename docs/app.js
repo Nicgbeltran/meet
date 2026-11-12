@@ -11,7 +11,11 @@ const state = {
   duration: 30,
   maxDaysAhead: 60,
   tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles',
-  month: null,          // { y, m } in the viewer's time zone
+  custom: { minMinutes: 10, maxMinutes: 600, stepMinutes: 5 },
+  view: 'month',        // 'month' | 'week' | 'list'
+  anchor: null,         // 'yyyy-mm-dd' in the viewer's time zone that the current view is built around
+  customMode: false,    // the person is typing their own start and end
+  customTouched: false,
   byDay: new Map(),     // 'yyyy-mm-dd' -> [ms]
   day: null,
   slot: null,
@@ -63,69 +67,207 @@ function dayKey(ms) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: state.tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(ms);
 }
 const timeLabel = (ms) => fmt({ hour: 'numeric', minute: '2-digit' }).format(ms);
+const hhmm = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: state.tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(ms);
 const longDate = (ms) => fmt({ weekday: 'long', month: 'long', day: 'numeric' }).format(ms);
-const lengthLabel = (min) => (min < 60 ? `${min} min` : `${min / 60} h`.replace('.5 h', '½ h').replace(/^0½/, '½'));
+function lengthLabel(min) {
+  const h = Math.floor(min / 60), m = min % 60;
+  if (!h) return `${m} min`;
+  if (!m) return `${h} h`;
+  if (m === 30) return `${h}½ h`;
+  return `${h} h ${m} min`;
+}
 function whenLabel(start, end) {
   return `${longDate(start)}, ${timeLabel(start)} – ${timeLabel(end)}`;
 }
 
-// ---------- picker ----------
+// Calendar maths on 'yyyy-mm-dd' keys (no time zone involved).
+const keyMs = (k) => Date.parse(k + 'T00:00:00Z');
+const addDays = (k, n) => new Date(keyMs(k) + n * 86400000).toISOString().slice(0, 10);
+const weekdayOfKey = (k) => new Date(keyMs(k)).getUTCDay();
+const keyLabel = (k, opts) => new Date(keyMs(k) + 12 * 3600000).toLocaleDateString(undefined, { timeZone: 'UTC', ...opts });
+
+// Wall-clock time on a day in the viewer's zone -> epoch ms.
+function zonedMs(k, time) {
+  const wall = Date.parse(`${k}T${time}:00Z`);
+  const offsetAt = (ms) => {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: state.tz, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(ms);
+    const get = (t) => Number(parts.find((p) => p.type === t).value);
+    return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute')) - ms;
+  };
+  return wall - offsetAt(wall - offsetAt(wall));
+}
+
+// ---------- lengths ----------
 
 function renderDurations() {
-  $('durations').innerHTML = state.durations.map((d) =>
-    `<button type="button" class="chip" role="radio" aria-checked="${d === state.duration}" data-d="${d}">${lengthLabel(d)}</button>`
-  ).join('');
+  const chips = state.durations.map((d) =>
+    `<button type="button" class="chip" role="radio" aria-checked="${!state.customMode && d === state.duration}" data-d="${d}">${lengthLabel(d)}</button>`);
+  if (!state.rescheduling) {
+    chips.push(`<button type="button" class="chip" role="radio" aria-checked="${state.customMode}" data-d="custom">Custom (up to 10 h)</button>`);
+  }
+  $('durations').innerHTML = chips.join('');
   $('durations').querySelectorAll('.chip').forEach((b) => b.addEventListener('click', () => {
     if (state.rescheduling) return;
-    state.duration = Number(b.dataset.d);
+    if (b.dataset.d === 'custom') {
+      state.customMode = true;
+      const d = customLength();
+      if (d.ok) state.duration = d.minutes;
+    } else {
+      state.customMode = false;
+      state.duration = Number(b.dataset.d);
+    }
     renderDurations();
-    loadMonth();
+    loadRange();
   }));
 }
+
+function customLength() {
+  const a = $('c-start').value, b = $('c-end').value;
+  if (!a || !b) return { ok: false, error: 'Type a start and an end time.' };
+  const [ah, am] = a.split(':').map(Number), [bh, bm] = b.split(':').map(Number);
+  const minutes = (bh * 60 + bm) - (ah * 60 + am);
+  const c = state.custom;
+  if (minutes <= 0) return { ok: false, error: 'The end needs to be after the start.' };
+  if (minutes < c.minMinutes) return { ok: false, error: `Make it at least ${c.minMinutes} minutes.` };
+  if (minutes > c.maxMinutes) return { ok: false, error: `That's longer than ${lengthLabel(c.maxMinutes)}. Please shorten it.` };
+  if (minutes % c.stepMinutes || am % c.stepMinutes) return { ok: false, error: `Please use times on ${c.stepMinutes}-minute steps (like 2:05 or 2:10).` };
+  return { ok: true, minutes };
+}
+
+function wireCustom() {
+  const onChange = () => {
+    state.customTouched = true;
+    const d = customLength();
+    $('c-len').textContent = d.ok ? lengthLabel(d.minutes) : '';
+    $('c-error').textContent = d.ok ? '' : d.error;
+    if (d.ok && d.minutes !== state.duration) { state.duration = d.minutes; loadRange(); }
+  };
+  $('c-start').addEventListener('change', onChange);
+  $('c-end').addEventListener('change', onChange);
+  $('c-go').addEventListener('click', async () => {
+    const d = customLength();
+    if (!d.ok) { $('c-error').textContent = d.error; return; }
+    if (!state.day) { $('c-error').textContent = 'Pick a day first.'; return; }
+    const ms = zonedMs(state.day, $('c-start').value);
+    $('c-go').disabled = true;
+    $('c-error').textContent = '';
+    try {
+      const { open } = await api({ action: 'check', start: ms, duration: d.minutes });
+      if (!open) {
+        $('c-error').textContent = 'That time isn\'t free. It overlaps something, needs a 10-minute gap, or falls outside 7:00am–9:30pm Pacific. Try one of the times below.';
+        return;
+      }
+      state.duration = d.minutes;
+      pickSlot(ms);
+    } catch (err) {
+      $('c-error').textContent = err.message;
+    } finally {
+      $('c-go').disabled = false;
+    }
+  });
+}
+
+function renderCustomBox() {
+  const showIt = state.customMode && !!state.day;
+  $('custom-box').classList.toggle('hidden', !showIt);
+  if (!showIt) return;
+  const first = (state.byDay.get(state.day) || [])[0];
+  if (!state.customTouched && first) {
+    $('c-start').value = hhmm(first);
+    $('c-end').value = hhmm(first + state.duration * 60000);
+  }
+  const d = customLength();
+  $('c-len').textContent = d.ok ? lengthLabel(d.minutes) : '';
+}
+
+// ---------- views ----------
 
 function renderTz() {
   let zones = [];
   try { zones = Intl.supportedValuesOf('timeZone'); } catch (e) { zones = [state.tz]; }
   if (!zones.includes(state.tz)) zones.unshift(state.tz);
   $('tz').innerHTML = zones.map((z) => `<option ${z === state.tz ? 'selected' : ''}>${z}</option>`).join('');
-  $('tz').addEventListener('change', () => { state.tz = $('tz').value; loadMonth(); });
+  $('tz').addEventListener('change', () => { state.tz = $('tz').value; state.anchor = clampAnchor(state.anchor); loadRange(); });
 }
 
-function thisMonth() {
-  const [y, m] = dayKey(Date.now()).split('-').map(Number);
-  return { y, m: m - 1 };
+function wireViews() {
+  document.querySelectorAll('.views button').forEach((b) => b.addEventListener('click', () => {
+    state.view = b.dataset.view;
+    document.querySelectorAll('.views button').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+    if (state.day) state.anchor = state.day;
+    loadRange();
+  }));
+  $('prev').addEventListener('click', () => step(-1));
+  $('next').addEventListener('click', () => step(1));
 }
 
-async function loadMonth() {
+const today = () => dayKey(Date.now());
+const lastDay = () => dayKey(Date.now() + state.maxDaysAhead * 86400000);
+function clampAnchor(k) {
+  if (!k || k < today()) return today();
+  return k > lastDay() ? lastDay() : k;
+}
+
+// The days the current view covers.
+function viewDays() {
+  const a = state.anchor;
+  if (state.view === 'week') {
+    const first = addDays(a, -weekdayOfKey(a));
+    return Array.from({ length: 7 }, (_, i) => addDays(first, i));
+  }
+  if (state.view === 'list') return Array.from({ length: 14 }, (_, i) => addDays(a, i));
+  const first = a.slice(0, 8) + '01';
+  const n = new Date(Date.UTC(+a.slice(0, 4), +a.slice(5, 7), 0)).getUTCDate();
+  return Array.from({ length: n }, (_, i) => addDays(first, i));
+}
+
+function step(dir) {
+  const a = state.anchor;
+  if (state.view === 'week') state.anchor = addDays(a, 7 * dir);
+  else if (state.view === 'list') state.anchor = addDays(a, 14 * dir);
+  else {
+    const d = new Date(Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1 + dir, 1));
+    state.anchor = d.toISOString().slice(0, 10);
+  }
+  state.anchor = clampAnchor(state.anchor);
+  state.day = null;
+  loadRange();
+}
+
+function rangeTitle(days) {
+  if (state.view === 'month') return keyLabel(days[0], { month: 'long', year: 'numeric' });
+  const a = keyLabel(days[0], { month: 'short', day: 'numeric' });
+  const b = keyLabel(days[days.length - 1], { month: 'short', day: 'numeric' });
+  return `${a} – ${b}`;
+}
+
+async function loadRange() {
   const id = ++state.loadId;
-  const { y, m } = state.month;
-  $('month-title').textContent = new Date(Date.UTC(y, m, 15)).toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
-  const now = thisMonth();
-  $('prev').disabled = y === now.y && m === now.m;
-  const lastAllowed = dayKey(Date.now() + state.maxDaysAhead * 86400000);
-  $('next').disabled = `${y}-${String(m + 1).padStart(2, '0')}` >= lastAllowed.slice(0, 7);
+  state.anchor = clampAnchor(state.anchor);
+  const days = viewDays();
+  $('range-title').textContent = rangeTitle(days);
+  $('prev').disabled = days[0] <= today();
+  $('next').disabled = days[days.length - 1] >= lastDay();
+  ['month', 'week', 'list'].forEach((v) => $(`${v}-view`).classList.toggle('hidden', v !== state.view));
   state.byDay = new Map();
-  renderGrid();
+  render(days);
   $('pick-status').textContent = 'Finding open times…';
-  $('times').innerHTML = '';
-  $('day-title').textContent = '';
   try {
     const data = await api({
       action: 'slots', duration: state.duration, token: state.rescheduling ? state.token : '',
-      start: Date.UTC(y, m, 1) - 86400000, end: Date.UTC(y, m + 1, 1) + 86400000,
+      start: keyMs(days[0]) - 86400000, end: keyMs(days[days.length - 1]) + 2 * 86400000,
     });
     if (id !== state.loadId) return;
-    const prefix = `${y}-${String(m + 1).padStart(2, '0')}`;
     data.slots.forEach((ms) => {
       const k = dayKey(ms);
-      if (!k.startsWith(prefix)) return;
+      if (k < days[0] || k > days[days.length - 1]) return;
       if (!state.byDay.has(k)) state.byDay.set(k, []);
       state.byDay.get(k).push(ms);
     });
-    $('pick-status').textContent = state.byDay.size ? '' : 'No open times this month. Try the next one.';
+    $('pick-status').textContent = state.byDay.size ? '' : `No open times ${state.view === 'month' ? 'this month' : 'in these days'} for ${lengthLabel(state.duration)}. Try ${state.view === 'month' ? 'the next month' : 'later dates'} or a shorter length.`;
     if (!state.day || !state.byDay.has(state.day)) state.day = [...state.byDay.keys()].sort()[0] || null;
-    renderGrid();
-    renderTimes();
+    render(days);
   } catch (err) {
     if (id !== state.loadId) return;
     $('pick-status').textContent = err.message + ' ';
@@ -133,36 +275,62 @@ async function loadMonth() {
     again.type = 'button';
     again.className = 'link';
     again.textContent = 'Try again';
-    again.addEventListener('click', loadMonth);
+    again.addEventListener('click', loadRange);
     $('pick-status').appendChild(again);
   }
 }
 
-function renderGrid() {
-  const { y, m } = state.month;
-  const first = new Date(Date.UTC(y, m, 1)).getUTCDay();
-  const days = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-  const today = dayKey(Date.now());
-  let html = '<span></span>'.repeat(first);
-  for (let d = 1; d <= days; d++) {
-    const k = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const open = state.byDay.has(k);
-    const cls = ['day', open && 'open', k === state.day && open && 'selected', k === today && 'today'].filter(Boolean).join(' ');
-    html += `<button type="button" class="${cls}" data-k="${k}" ${open ? '' : 'disabled'} aria-label="${k}${open ? ', open' : ''}">${d}</button>`;
-  }
-  $('grid').innerHTML = html;
-  $('grid').querySelectorAll('.day.open').forEach((b) => b.addEventListener('click', () => {
+function render(days) {
+  if (state.view === 'month') renderMonth(days);
+  if (state.view === 'week') renderWeek(days);
+  if (state.view === 'list') renderList(days);
+  const inlineTimes = state.view !== 'month';
+  const slots = state.day ? state.byDay.get(state.day) || [] : [];
+  $('day-title').textContent = state.day && (state.customMode || !inlineTimes) && slots.length ? longDate(slots[0]) : '';
+  $('times').classList.toggle('hidden', inlineTimes);
+  if (!inlineTimes) $('times').innerHTML = timeButtons(slots);
+  $('c-or').textContent = inlineTimes ? 'Or tap a start time above for that length.' : 'Or tap a start time below for that length.';
+  renderCustomBox();
+  wireTimes();
+}
+
+const timeButtons = (slots) => slots.map((ms) => `<button type="button" class="time" data-ms="${ms}">${timeLabel(ms)}</button>`).join('');
+function wireTimes() {
+  document.querySelectorAll('#pick .time').forEach((b) => b.addEventListener('click', () => pickSlot(Number(b.dataset.ms))));
+  document.querySelectorAll('#pick [data-k]').forEach((b) => b.addEventListener('click', () => {
+    if (b.disabled) return;
     state.day = b.dataset.k;
-    renderGrid();
-    renderTimes();
+    render(viewDays());
   }));
 }
 
-function renderTimes() {
-  const slots = state.day ? state.byDay.get(state.day) || [] : [];
-  $('day-title').textContent = slots.length ? longDate(slots[0]) : '';
-  $('times').innerHTML = slots.map((ms) => `<button type="button" class="time" data-ms="${ms}">${timeLabel(ms)}</button>`).join('');
-  $('times').querySelectorAll('.time').forEach((b) => b.addEventListener('click', () => pickSlot(Number(b.dataset.ms))));
+function renderMonth(days) {
+  const t = today();
+  let html = '<span></span>'.repeat(weekdayOfKey(days[0]));
+  days.forEach((k) => {
+    const open = state.byDay.has(k);
+    const cls = ['day', open && 'open', k === state.day && open && 'selected', k === t && 'today'].filter(Boolean).join(' ');
+    html += `<button type="button" class="${cls}" data-k="${k}" ${open ? '' : 'disabled'} aria-label="${keyLabel(k, { weekday: 'long', month: 'long', day: 'numeric' })}${open ? ', open' : ''}">${+k.slice(8)}</button>`;
+  });
+  $('grid').innerHTML = html;
+}
+
+function renderWeek(days) {
+  $('week-view').innerHTML = days.map((k) => {
+    const slots = state.byDay.get(k) || [];
+    const head = `<button type="button" class="whead${k === state.day && slots.length ? ' selected' : ''}" data-k="${k}" ${slots.length ? '' : 'disabled'}>${keyLabel(k, { weekday: 'short' })}<span>${+k.slice(8)}</span></button>`;
+    const body = slots.length ? `<div class="wtimes">${timeButtons(slots)}</div>` : '<div class="wempty">No times</div>';
+    return `<div class="wcol">${head}${body}</div>`;
+  }).join('');
+}
+
+function renderList(days) {
+  const open = days.filter((k) => state.byDay.has(k));
+  $('list-view').innerHTML = open.map((k) => {
+    const slots = state.byDay.get(k);
+    return `<div class="lday"><button type="button" class="lhead${k === state.day ? ' selected' : ''}" data-k="${k}">${keyLabel(k, { weekday: 'long' })}<small>${keyLabel(k, { month: 'long', day: 'numeric' })} · ${slots.length} times</small></button>`
+      + `<div class="ltimes">${timeButtons(slots)}</div></div>`;
+  }).join('');
 }
 
 function pickSlot(ms) {
@@ -186,19 +354,20 @@ function wireForm() {
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
     const v = Object.fromEntries(new FormData(f).entries());
+    v.knownContact = f.elements.knownContact.checked;
     const problem = checkForm(v);
     $('form-error').textContent = problem || '';
     if (problem) return;
     $('submit').disabled = true;
     $('submit').textContent = 'Booking…';
     try {
-      const key = `${state.slot}|${state.duration}|${v.name}|${v.title}|${v.email}|${v.phone}|${v.locationType}|${v.locationText}`;
+      const key = `${state.slot}|${state.duration}|${v.name}|${v.title}|${v.email}|${v.phone}|${v.knownContact}|${v.locationType}|${v.locationText}`;
       if (state.requestKey !== key) { state.requestKey = key; state.requestId = newRequestId(); }
       const data = await api(null, { action: 'book', ...v, duration: state.duration, start: state.slot, timeZone: state.tz, requestId: state.requestId });
       showDone(data.booking, data.token, v);
     } catch (err) {
       $('form-error').textContent = err.message;
-      if (/taken/.test(err.message)) loadMonth();
+      if (/taken/.test(err.message)) loadRange();
     } finally {
       $('submit').disabled = false;
       $('submit').textContent = 'Book it';
@@ -209,7 +378,7 @@ function wireForm() {
 function checkForm(v) {
   if (!v.name.trim()) return 'Please enter your name.';
   if (!v.title.trim()) return 'Please give the meeting a name.';
-  if (!v.email.trim() && !v.phone.trim()) return 'Please give an email or a phone number (or both).';
+  if (!v.email.trim() && !v.phone.trim() && !v.knownContact) return 'Please give an email or a phone number, or tick the box if Nico already has your contact info.';
   if (v.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.email.trim())) return 'That email address doesn\'t look right.';
   if (v.phone.trim() && v.phone.replace(/\D/g, '').length < 7) return 'That phone number doesn\'t look right.';
   if (v.locationType === 'custom' && !v.locationText.trim()) return 'Please say where you\'d like to meet.';
@@ -226,11 +395,14 @@ function showDone(b, token, v) {
   $('done-title').textContent = state.rescheduling ? 'Moved' : 'You\'re booked';
   $('summary').innerHTML = summaryHtml(b);
   const email = v ? v.email.trim() : '';
+  const phone = v ? v.phone.trim() : '';
   $('done-note').textContent = state.rescheduling
-    ? 'Your calendar invite has been updated.'
+    ? 'Done. If you gave an email, your calendar invite has been updated.'
     : email
-      ? `A calendar invite is on its way to ${email}. You'll also get a reminder a day and an hour before.`
-      : 'You gave a phone number only, so there\'s no email invite. Nico will reach you by phone. Save the link below to change or cancel.';
+      ? `A calendar invite is on its way to ${email}, and you'll get email reminders a day and an hour before.`
+      : phone
+        ? 'Reminders and invites only go by email, so you won\'t get any. Nico has your number. Save the link below to change or cancel.'
+        : 'No email given, so there\'s no invite or reminder. Nico will use the contact info he already has. Save the link below to change or cancel.';
   $('manage-link').href = `?booking=${token || state.token}`;
   const dt = (ms) => new Date(ms).toISOString().replace(/[-:]|\.\d{3}/g, '');
   $('gcal-link').href = 'https://calendar.google.com/calendar/render?action=TEMPLATE'
@@ -256,10 +428,11 @@ async function openManage() {
   $('cancel').addEventListener('click', cancelBooking);
   $('resched').addEventListener('click', () => {
     state.rescheduling = true;
+    state.customMode = false;
     state.duration = state.booking.duration;
     renderDurations();
     show('pick');
-    loadMonth();
+    loadRange();
   });
 }
 
@@ -285,7 +458,7 @@ async function reschedule(ms) {
     showDone(booking, state.token, null);
   } catch (err) {
     $('pick-status').textContent = err.message;
-    loadMonth();
+    loadRange();
   }
 }
 
@@ -301,26 +474,20 @@ function esc(s) {
 
 async function start() {
   renderTz();
-  state.month = thisMonth();
-  $('prev').addEventListener('click', () => { stepMonth(-1); });
-  $('next').addEventListener('click', () => { stepMonth(1); });
+  state.anchor = today();
+  wireViews();
+  wireCustom();
   wireForm();
   try {
     const cfg = await api({ action: 'config' });
     state.durations = cfg.durations;
     state.duration = cfg.defaultDuration;
     state.maxDaysAhead = cfg.maxDaysAhead;
+    if (cfg.custom) state.custom = cfg.custom;
   } catch (e) { /* keep the defaults */ }
   renderDurations();
   if (state.token) return openManage();
-  loadMonth();
-}
-
-function stepMonth(delta) {
-  const d = new Date(Date.UTC(state.month.y, state.month.m + delta, 1));
-  state.month = { y: d.getUTCFullYear(), m: d.getUTCMonth() };
-  state.day = null;
-  loadMonth();
+  loadRange();
 }
 
 // ---------- mock backend for local previews (?mock) ----------
@@ -328,14 +495,15 @@ function stepMonth(delta) {
 function mockApi(p, body) {
   const wait = (v) => new Promise((r) => setTimeout(() => r({ ok: true, ...v }), 250));
   const req = body || p;
-  if (req.action === 'config') return wait({ durations: state.durations, defaultDuration: 30, maxDaysAhead: 60 });
+  if (req.action === 'config') return wait({ durations: state.durations, defaultDuration: 30, maxDaysAhead: 60, custom: state.custom });
+  if (req.action === 'check') return wait({ open: true });
   if (req.action === 'slots') {
     const out = [];
     const step = 15 * 60000, dur = Number(req.duration) * 60000;
     for (let t = Math.ceil((Date.now() + 2 * 3600000) / step) * step; t < Number(req.end); t += step) {
       const la = new Date(new Date(t).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
       const mins = la.getHours() * 60 + la.getMinutes();
-      if (t >= Number(req.start) && la.getDay() !== 6 && mins >= 420 && mins * 60000 + dur <= 1290 * 60000 && !(mins >= 720 && mins < 780)) out.push(t);
+      if (t >= Number(req.start) && mins >= 420 && mins * 60000 + dur <= 1290 * 60000 && !(mins >= 720 && mins < 780)) out.push(t);
     }
     return wait({ slots: out });
   }
