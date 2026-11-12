@@ -127,7 +127,14 @@ async function loadMonth() {
     renderGrid();
     renderTimes();
   } catch (err) {
-    if (id === state.loadId) $('pick-status').textContent = err.message;
+    if (id !== state.loadId) return;
+    $('pick-status').textContent = err.message + ' ';
+    const again = document.createElement('button');
+    again.type = 'button';
+    again.className = 'link';
+    again.textContent = 'Try again';
+    again.addEventListener('click', loadMonth);
+    $('pick-status').appendChild(again);
   }
 }
 
